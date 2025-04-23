@@ -39,10 +39,10 @@ public class VirtualMachine
 #if DEBUG_TRACE_EXECUTION
             Value[] slots = [.. _stack];
             Console.Write("          ");
-            for (int slot = 0; slot < slots.Length; ++slot)
+            for (int s = 0; s < slots.Length; ++s)
             {
                 Console.Write("[ ");
-                Console.Write($"{slots[slot].ToString():G}");
+                Console.Write($"{slots[s].ToString():G}");
                 Console.Write(" ]");
             }
             Console.WriteLine();
@@ -51,11 +51,12 @@ public class VirtualMachine
             byte instruction = ReadByte();
             string name;
             Value value;
+            int slot;
+            ushort offset;
 
             switch (instruction)
             {
                 case (byte)OpCode.OP_CONSTANT:
-                case (byte)OpCode.OP_CONSTANT_LONG:
                     Value constant = ReadConstant();
                     _stack.Push(constant);
                     break;
@@ -71,8 +72,18 @@ public class VirtualMachine
                 case (byte)OpCode.OP_POP:
                     _stack.Pop();
                     break;
+                case (byte)OpCode.OP_GET_LOCAL:
+                    slot = ReadInt();
+
+                    _stack.Push(Peek(slot));
+                    break;
+                case (byte)OpCode.OP_SET_LOCAL:
+                    slot = ReadInt();
+
+                    InsertInStack(slot, Peek(0));
+                    break;
                 case (byte)OpCode.OP_GET_GLOBAL:
-                case (byte)OpCode.OP_GET_GLOBAL_LONG:
+                //case (byte)OpCode.OP_GET_GLOBAL_LONG:
                     name = ReadConstant().AsString();
 
                     if (_globals.TryGetValue(name, out value))
@@ -87,7 +98,7 @@ public class VirtualMachine
 
                     break;
                 case (byte)OpCode.OP_DEFINE_GLOBAL:
-                case (byte)OpCode.OP_DEFINE_GLOBAL_LONG:
+                //case (byte)OpCode.OP_DEFINE_GLOBAL_LONG:
                     name = ReadConstant().AsString();
 
                     //if (_globals.TryGetValue(name, out value))
@@ -100,7 +111,7 @@ public class VirtualMachine
                     _stack.Pop();
                     break;
                 case (byte)OpCode.OP_SET_GLOBAL:
-                case (byte)OpCode.OP_SET_GLOBAL_LONG:
+                //case (byte)OpCode.OP_SET_GLOBAL_LONG:
                     name = ReadConstant().AsString();
 
                     if (_globals.TryGetValue(name, out value))
@@ -165,6 +176,18 @@ public class VirtualMachine
                     break;
                 case (byte)OpCode.OP_PRINT:
                     _stack.Pop().PrintValue();
+                    // try pushing the prior value back onto the stack, or use peek
+                    break;
+                case (byte)OpCode.OP_JUMP:
+                    offset = ReadShort();
+
+                    PC += offset;
+                    break;
+                case (byte)OpCode.OP_JUMP_IF_FALSE:
+                    offset = ReadShort();
+
+                    if (IsFalsey(Peek(0)))
+                        PC += offset;
                     break;
                 case (byte)OpCode.OP_RETURN:
                     return InterpretResult.INTERPRET_OK;
@@ -177,6 +200,24 @@ public class VirtualMachine
         Value[] vals = [.. _stack];
         distance = (vals.Length - 1) - distance;
         return vals[distance];
+    }
+
+    private void InsertInStack(int slot, Value value)
+    {
+        Stack<Value> tempStack = [];
+
+        for (int i = 0; i < _stack.Count - slot; ++i)
+        {
+            tempStack.Push(_stack.Pop());
+        }
+
+        _stack.Push(value);
+        tempStack.Pop();
+
+        for (int i = 0; i < tempStack.Count; ++i)
+        {
+            _stack.Push(tempStack.Pop());
+        }
     }
 
     private static bool IsFalsey(Value value)
@@ -196,6 +237,11 @@ public class VirtualMachine
         return _chunk.Code[PC++];
     }
 
+    private ushort ReadShort()
+    {
+        return BitConverter.ToUInt16([ReadByte(), ReadByte()]);
+    }
+
     private int ReadInt()
     {
         return BitConverter.ToInt32([ReadByte(), ReadByte(), ReadByte(), ReadByte()]);
@@ -203,16 +249,17 @@ public class VirtualMachine
 
     private Value ReadConstant()
     {
-        if (_chunk.Constants.Values.Count <= byte.MaxValue)
-            return _chunk.Constants.Values[ReadByte()];
-        else
-            return _chunk.Constants.Values[ReadInt()];
+        return _chunk.Constants.Values[ReadInt()];
+        //if (_chunk.Constants.Values.Count <= byte.MaxValue)
+        //    return _chunk.Constants.Values[ReadByte()];
+        //else
+        //    return _chunk.Constants.Values[ReadInt()];
     }
 
     private void StringBinaryOp()
     {
-        string b = _stack.Pop().AsString();
-        string a = _stack.Pop().AsString();
+        string b = _stack.Pop().ToString();
+        string a = _stack.Pop().ToString();
 
         _stack.Push(Value.StringVal(a + b));
     }

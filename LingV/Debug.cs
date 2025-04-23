@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -36,8 +37,8 @@ public class Debug
         {
             case (byte)OpCode.OP_CONSTANT:
                 return ConstantInstruction("OP_CONSTANT", chunk, offset);
-            case (byte)OpCode.OP_CONSTANT_LONG:
-                return ConstantLongInstruction("OP_CONSTANT_LONG", chunk, offset);
+            //case (byte)OpCode.OP_CONSTANT_LONG:
+            //    return ConstantLongInstruction("OP_CONSTANT_LONG", chunk, offset);
             case (byte)OpCode.OP_NIL:
                 return SimpleInstruction("OP_NIL", offset);
             case (byte)OpCode.OP_TRUE:
@@ -46,18 +47,22 @@ public class Debug
                 return SimpleInstruction("OP_FALSE", offset);
             case (byte)OpCode.OP_POP:
                 return SimpleInstruction("OP_POP", offset);
+            case (byte)OpCode.OP_GET_LOCAL:
+                return IntInstruction("OP_GET_LOCAL", chunk, offset);
+            case (byte)OpCode.OP_SET_LOCAL:
+                return IntInstruction("OP_SET_LOCAL", chunk, offset);
             case (byte)OpCode.OP_GET_GLOBAL:
                 return ConstantInstruction("OP_GET_GLOBAL", chunk, offset);
-            case (byte)OpCode.OP_GET_GLOBAL_LONG:
-                return ConstantLongInstruction("OP_GET_GLOBAL_LONG", chunk, offset);
+            //case (byte)OpCode.OP_GET_GLOBAL_LONG:
+            //    return ConstantLongInstruction("OP_GET_GLOBAL_LONG", chunk, offset);
             case (byte)OpCode.OP_DEFINE_GLOBAL:
                 return ConstantInstruction("OP_DEFINE_GLOBAL", chunk, offset);
-            case (byte)OpCode.OP_DEFINE_GLOBAL_LONG:
-                return ConstantLongInstruction("OP_DEFINE_GLOBAL_LONG", chunk, offset);
+            //case (byte)OpCode.OP_DEFINE_GLOBAL_LONG:
+            //    return ConstantLongInstruction("OP_DEFINE_GLOBAL_LONG", chunk, offset);
             case (byte)OpCode.OP_SET_GLOBAL:
                 return ConstantInstruction("OP_SET_GLOBAL", chunk, offset);
-            case (byte)OpCode.OP_SET_GLOBAL_LONG:
-                return ConstantLongInstruction("OP_SET_GLOBAL_LONG", chunk, offset);
+            //case (byte)OpCode.OP_SET_GLOBAL_LONG:
+            //    return ConstantLongInstruction("OP_SET_GLOBAL_LONG", chunk, offset);
             case (byte)OpCode.OP_EQUAL:
                 return SimpleInstruction("OP_EQUAL", offset);
             case (byte)OpCode.OP_GREATER:
@@ -76,12 +81,25 @@ public class Debug
                 return SimpleInstruction("OP_NEGATE", offset);
             case (byte)OpCode.OP_PRINT:
                 return SimpleInstruction("OP_PRINT", offset);
+            case (byte)OpCode.OP_JUMP:
+                return JumpInstruction("OP_JUMP", 1, chunk, offset);
+            case (byte)OpCode.OP_JUMP_IF_FALSE:
+                return JumpInstruction("OP_JUMP", 1, chunk, offset);
             case (byte) OpCode.OP_RETURN:
                 return SimpleInstruction("OP_RETURN", offset);
             default:
                 Console.WriteLine($"Unknown opcode {instruction}");
                 return offset + 1;
         }
+    }
+
+    private static int JumpInstruction(string name, int sign, Chunk chunk, int offset)
+    {
+        ushort jump = (ushort)(chunk.Code[offset + 1] << 8);
+        jump |= chunk.Code[offset + 2];
+        Console.WriteLine($"{name,-16} {offset:D4} -> {offset + 3 + sign * jump}");
+
+        return offset + 3;
     }
 
     private static int SimpleInstruction(string name, int offset)
@@ -93,19 +111,27 @@ public class Debug
 
     private static int ConstantInstruction(string name, Chunk chunk, int offset)
     {
-        byte constant = chunk.Code[offset + 1];
-        Console.Write($"{name,-16} {constant:G4} '");
-        Console.WriteLine($"{chunk.Constants.Values[constant]:G}'");
-
-        return offset + 2;
-    }
-
-    private static int ConstantLongInstruction(string name, Chunk chunk, int offset)
-    {
         int constant = BitConverter.ToInt32([chunk.Code[offset + 1], chunk.Code[offset + 2], chunk.Code[offset + 3], chunk.Code[offset + 4]]);
         Console.Write($"{name,-16} {constant:G4} '");
         Console.WriteLine($"{chunk.Constants.Values[constant]:G}'");
 
         return offset + 5;
     }
+
+    private static int IntInstruction(string name, Chunk chunk, int offset)
+    {
+        int slot = BitConverter.ToInt32([chunk.Code[offset + 1], chunk.Code[offset + 2], chunk.Code[offset + 3], chunk.Code[offset + 4]]);
+        Console.WriteLine($"{name,-16} {slot:G4}");
+
+        return offset + 5;
+    }
+
+    //private static int ConstantLongInstruction(string name, Chunk chunk, int offset)
+    //{
+    //    int constant = BitConverter.ToInt32([chunk.Code[offset + 1], chunk.Code[offset + 2], chunk.Code[offset + 3], chunk.Code[offset + 4]]);
+    //    Console.Write($"{name,-16} {constant:G4} '");
+    //    Console.WriteLine($"{chunk.Constants.Values[constant]:G}'");
+
+    //    return offset + 5;
+    //}
 }

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -38,10 +39,11 @@ public struct ParseRule(Action<bool> prefix, Action<bool> infix, Precedence prec
     public Precedence Precedence = precedence;
 }
 
-public struct Local
+public struct Local(Token name, int depth)
 {
-    public Token name;
-    public Token value;
+    public Token Name = name;
+    public Token Value;
+    public int Depth = depth;
 }
 
 public class Compiler
@@ -50,8 +52,8 @@ public class Compiler
     private Parser _parser = new();
     private Chunk _currentChunk;
 
-    private List<Local> _locals = [];
-    private int _scopeDeath = 0;
+    private readonly List<Local> _locals = [];
+    private int _scopeDepth = 0;
 
     private readonly Dictionary<TokenType, ParseRule> _rules;
 
@@ -81,7 +83,7 @@ public class Compiler
             { TokenType.TOKEN_IDENTIFIER,       new(Variable,   null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_STRING,           new(String,     null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_NUMBER,           new(Number,     null,   Precedence.PREC_NONE) },
-            { TokenType.TOKEN_AND,              new(null,       null,   Precedence.PREC_NONE) },
+            { TokenType.TOKEN_AND,              new(null,       And,    Precedence.PREC_AND) },
             { TokenType.TOKEN_CLASS,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_ELSE,             new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_FALSE,            new(Literal,    null,   Precedence.PREC_NONE) },
@@ -199,6 +201,15 @@ public class Compiler
         EmitByte(b2);
     }
 
+    private int EmitJump(byte instuction)
+    {
+        EmitByte(instuction);
+        EmitByte(0xFF);
+        EmitByte(0xFF);
+
+        return _currentChunk.Code.Count - 2;
+    }
+
     private void EmitBytes(byte[] bytes)
     {
         _currentChunk.Write(bytes, _parser.Previous.Line);
@@ -214,18 +225,31 @@ public class Compiler
         _currentChunk.WriteConstant(value, _parser.Previous.Line);
     }
 
-    private void EmitGlobalVarOp(OpCode normal, OpCode extended, int value)
+    private void PatchJump(int offset)
     {
-        if (value <= byte.MaxValue)
+        int jump = _currentChunk.Code.Count - 2 - offset;
+
+        if (jump > ushort.MaxValue)
         {
-            EmitBytes((byte)normal, (byte)value);
+            Error("Too much code to jump over.");
         }
-        else
-        {
-            EmitByte((byte)extended);
-            EmitBytes(BitConverter.GetBytes(value));
-        }
+
+        _currentChunk.Code[offset] = (byte)((jump >> 8) & 0xff);
+        _currentChunk.Code[offset + 1] = (byte)(jump & 0xff);
     }
+
+    //private void EmitGlobalVarOp(OpCode normal, OpCode extended, int value)
+    //{
+    //    if (value <= byte.MaxValue)
+    //    {
+    //        EmitBytes((byte)normal, (byte)value);
+    //    }
+    //    else
+    //    {
+    //        EmitByte((byte)extended);
+    //        EmitBytes(BitConverter.GetBytes(value));
+    //    }
+    //}
 
     private void EndCompiler()
     {
@@ -235,6 +259,22 @@ public class Compiler
         if (!_parser.HadError)
             Debug.DisassembleChunk(_currentChunk, "code");
 #endif
+    }
+
+    private void BeginScope()
+    {
+        _scopeDepth++;
+    }
+
+    private void EndScope()
+    {
+        _scopeDepth--;
+
+        while (_locals.Count > 0 && _locals[^1].Depth > _scopeDepth)
+        {
+            EmitByte((byte)OpCode.OP_POP);
+            _locals.RemoveAt(_locals.Count - 1);
+        }
     }
 
     private void Grouping(bool canAssign)
@@ -256,17 +296,33 @@ public class Compiler
 
     private void NamedVariable(Token name, bool canAssign)
     {
-        int arg = FindIdentifierConstant(name);
+        //int arg = FindIdentifierConstant(name);
+        byte getOp, setOP;
+        int arg = ResolveLocal(name);
+
+        if (arg != 1)
+        {
+            getOp = (byte)OpCode.OP_GET_LOCAL;
+            setOP = (byte)OpCode.OP_SET_LOCAL;
+        }
+        else
+        {
+            arg = FindIdentifierConstant(name);
+            getOp = (byte)OpCode.OP_GET_GLOBAL;
+            setOP = (byte)OpCode.OP_SET_GLOBAL;
+        }
 
         if (canAssign && arg >= 0 && Match(TokenType.TOKEN_EQUAL))
         {
             Expression();
 
-            EmitGlobalVarOp(OpCode.OP_SET_GLOBAL, OpCode.OP_SET_GLOBAL_LONG, arg);
+            EmitByte(setOP);
+            EmitBytes(BitConverter.GetBytes(arg));
         }
         else if (arg >= 0)
         {
-            EmitGlobalVarOp(OpCode.OP_GET_GLOBAL, OpCode.OP_GET_GLOBAL_LONG, arg);
+            EmitByte(getOp);
+            EmitBytes(BitConverter.GetBytes(arg));
         }
     }
 
@@ -377,6 +433,45 @@ public class Compiler
         return _currentChunk.AddConstant(Value.StringVal(name.Lexeme));
     }
 
+    private int ResolveLocal(Token name)
+    {
+        for (int i = _locals.Count - 1; i >= 0; --i)
+        {
+            Local local = _locals[i];
+
+            if (name.Lexeme == local.Name.Lexeme)
+            {
+                if (local.Depth == -1)
+                    Error("Can't read local variable in its own initializer.");
+
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private void DeclareVariable()
+    {
+        if (_scopeDepth == 0)
+            return;
+
+        Token name = _parser.Previous;
+
+        for (int i = _locals.Count - 1; i >= 0; --i)
+        {
+            Local local = _locals[i];
+
+            if (local.Depth != -1 && local.Depth < _scopeDepth)
+                break;
+
+            if (name.Lexeme == local.Name.Lexeme)
+                Error("Already a variable with this name in this scope.");
+        }
+
+        _locals.Add(new(name, -1));
+    }
+
     private int FindIdentifierConstant(Token name)
     {
         List<Value> constants = _currentChunk.Constants.Values;
@@ -394,25 +489,59 @@ public class Compiler
     private int ParseVariable(string errorMessage)
     {
         Consume(TokenType.TOKEN_IDENTIFIER, errorMessage);
+
+        DeclareVariable();
+        if (_scopeDepth > 0)
+            return 0;
+
         return IdentifierConstant(_parser.Previous);
+    }
+
+    private void MarkInitialized()
+    {
+        _locals[^1] = new(_locals[^1].Name, _scopeDepth);
     }
 
     private void DefineVariable(int global)
     {
-        if (global <= byte.MaxValue)
+        if (_scopeDepth > 0)
         {
-            EmitBytes((byte)OpCode.OP_DEFINE_GLOBAL, (byte)global);
-        } 
-        else
-        {
-            EmitByte((byte)OpCode.OP_DEFINE_GLOBAL_LONG);
-            EmitBytes(BitConverter.GetBytes(global));
+            MarkInitialized();
+            return;
         }
+
+        EmitByte((byte)OpCode.OP_DEFINE_GLOBAL);
+        EmitBytes(BitConverter.GetBytes(global));
+
+        //if (global <= byte.MaxValue)
+        //{
+        //    EmitBytes((byte)OpCode.OP_DEFINE_GLOBAL, (byte)global);
+        //} 
+        //else
+        //{
+        //    EmitByte((byte)OpCode.OP_DEFINE_GLOBAL_LONG);
+        //    EmitBytes(BitConverter.GetBytes(global));
+        //}
+    }
+
+    private void And(bool canAsign)
+    {
+        //ToDo: implement
     }
 
     private void Expression()
     {
         ParsePrecedence(Precedence.PREC_ASSIGNMENT);
+    }
+
+    private void Block()
+    {
+        while (!Check(TokenType.TOKEN_RIGHT_BRACE) && !Check(TokenType.TOKEN_EOF))
+        {
+            Declaration();
+        }
+
+        Consume(TokenType.TOKEN_RIGHT_BRACE, "Expect '}' after block.");
     }
 
     private void VarDeclaration()
@@ -434,6 +563,27 @@ public class Compiler
         Expression();
         Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after expression.");
         EmitByte((byte)OpCode.OP_POP);
+    }
+
+    private void IfStatement()
+    {
+        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+        Expression();
+        Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+
+        int thenJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+        EmitByte((byte)OpCode.OP_POP);
+        Statement();
+
+        int elseJump = EmitJump((byte)OpCode.OP_JUMP);
+
+        PatchJump(thenJump);
+        EmitByte((byte)OpCode.OP_POP);
+
+        if (Match(TokenType.TOKEN_ELSE))
+            Statement();
+
+        PatchJump(elseJump);
     }
 
     private void PrintStatement()
@@ -486,6 +636,14 @@ public class Compiler
     {
         if (Match(TokenType.TOKEN_PRINT))
             PrintStatement();
+        if (Match(TokenType.TOKEN_IF))
+            IfStatement();
+        else if (Match(TokenType.TOKEN_LEFT_BRACE))
+        {
+            BeginScope();
+            Block();
+            EndScope();
+        }
         else
             ExpressionStatement();
     }
@@ -515,7 +673,7 @@ public class Compiler
         }
         else if (token.Type == TokenType.TOKEN_ERROR)
         {
-            
+            // Intentional nothing
         }
         else
         {
