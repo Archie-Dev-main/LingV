@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "LingV": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Users\\archi\\OneDrive\\Documents\\LingG\\test_expr.txt"
+    }
+  }
+}
