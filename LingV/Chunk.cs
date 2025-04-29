@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 namespace LingV;
 
-public enum OpCode
+public enum OpCode : byte
 {
     OP_CONSTANT,
     //OP_CONSTANT_LONG,
@@ -33,6 +33,7 @@ public enum OpCode
     OP_PRINT,
     OP_JUMP,
     OP_JUMP_IF_FALSE,
+    OP_LOOP,
     OP_RETURN
 }
 

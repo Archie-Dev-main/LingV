@@ -41,9 +41,7 @@ public class VirtualMachine
             Console.Write("          ");
             for (int s = 0; s < slots.Length; ++s)
             {
-                Console.Write("[ ");
-                Console.Write($"{slots[s].ToString():G}");
-                Console.Write(" ]");
+                Console.Write($"[ {slots[s].ToString():G} ]");
             }
             Console.WriteLine();
             Debug.DisassembleInstruction(_chunk, PC);
@@ -75,12 +73,12 @@ public class VirtualMachine
                 case (byte)OpCode.OP_GET_LOCAL:
                     slot = ReadInt();
 
-                    _stack.Push(Peek(slot));
+                    _stack.Push(_stack.Peek());
                     break;
                 case (byte)OpCode.OP_SET_LOCAL:
                     slot = ReadInt();
 
-                    InsertInStack(slot, Peek(0));
+                    InsertInStack(slot, _stack.Peek());
                     break;
                 case (byte)OpCode.OP_GET_GLOBAL:
                 //case (byte)OpCode.OP_GET_GLOBAL_LONG:
@@ -176,18 +174,21 @@ public class VirtualMachine
                     break;
                 case (byte)OpCode.OP_PRINT:
                     _stack.Pop().PrintValue();
-                    // try pushing the prior value back onto the stack, or use peek
                     break;
                 case (byte)OpCode.OP_JUMP:
-                    offset = ReadShort();
+                    offset = ReadJumpShort();
 
                     PC += offset;
                     break;
                 case (byte)OpCode.OP_JUMP_IF_FALSE:
-                    offset = ReadShort();
+                    offset = ReadJumpShort();
 
                     if (IsFalsey(Peek(0)))
                         PC += offset;
+                    break;
+                case (byte)OpCode.OP_LOOP:
+                    offset = ReadJumpShort();
+                    PC -= offset;
                     break;
                 case (byte)OpCode.OP_RETURN:
                     return InterpretResult.INTERPRET_OK;
@@ -211,8 +212,9 @@ public class VirtualMachine
             tempStack.Push(_stack.Pop());
         }
 
-        _stack.Push(value);
         tempStack.Pop();
+        _stack.Push(value);
+        
 
         for (int i = 0; i < tempStack.Count; ++i)
         {
@@ -240,6 +242,13 @@ public class VirtualMachine
     private ushort ReadShort()
     {
         return BitConverter.ToUInt16([ReadByte(), ReadByte()]);
+    }
+
+    private ushort ReadJumpShort()
+    {
+        ushort ret = (ushort)((_chunk.Code[PC] << 8) | _chunk.Code[PC + 1]);
+        PC += 2;
+        return ret;
     }
 
     private int ReadInt()

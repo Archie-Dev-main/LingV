@@ -57,7 +57,7 @@ public struct Value
 
     public static Value StringVal(string value)
     {
-        return new() { type = ValueType.VAL_STRING, str = new(value) };
+        return new() { type = ValueType.VAL_STRING, str = value };
     }
 
     //public static Value ObjVal(object value)

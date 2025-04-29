@@ -1,12 +1,4 @@
 ﻿using System;
-using System.Buffers.Binary;
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection.Metadata;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 
 namespace LingV;
 
@@ -77,6 +69,8 @@ public class Debug
                 return SimpleInstruction("OP_MULTIPLY", offset);
             case (byte)OpCode.OP_DIVIDE:
                 return SimpleInstruction("OP_DIVIDE", offset);
+            case (byte)OpCode.OP_NOT:
+                return SimpleInstruction("OP_NOT", offset);
             case (byte)OpCode.OP_NEGATE:
                 return SimpleInstruction("OP_NEGATE", offset);
             case (byte)OpCode.OP_PRINT:
@@ -84,8 +78,10 @@ public class Debug
             case (byte)OpCode.OP_JUMP:
                 return JumpInstruction("OP_JUMP", 1, chunk, offset);
             case (byte)OpCode.OP_JUMP_IF_FALSE:
-                return JumpInstruction("OP_JUMP", 1, chunk, offset);
-            case (byte) OpCode.OP_RETURN:
+                return JumpInstruction("OP_JUMP_IF_FALSE", 1, chunk, offset);
+            case (byte)OpCode.OP_LOOP:
+                return JumpInstruction("OP_LOOP", -1, chunk, offset);
+            case (byte)OpCode.OP_RETURN:
                 return SimpleInstruction("OP_RETURN", offset);
             default:
                 Console.WriteLine($"Unknown opcode {instruction}");
@@ -97,7 +93,7 @@ public class Debug
     {
         ushort jump = (ushort)(chunk.Code[offset + 1] << 8);
         jump |= chunk.Code[offset + 2];
-        Console.WriteLine($"{name,-16} {offset:D4} -> {offset + 3 + sign * jump}");
+        Console.WriteLine($"{name,-16} {offset:D4} -> {offset + 3 + sign * jump:D4}");
 
         return offset + 3;
     }

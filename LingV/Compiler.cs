@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
@@ -52,6 +53,8 @@ public class Compiler
     private Parser _parser = new();
     private Chunk _currentChunk;
 
+    private readonly Stack<int> _breakJumps = [];
+
     private readonly List<Local> _locals = [];
     private int _scopeDepth = 0;
 
@@ -91,7 +94,7 @@ public class Compiler
             { TokenType.TOKEN_FUN,              new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_IF,               new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_NIL,              new(Literal,    null,   Precedence.PREC_NONE) },
-            { TokenType.TOKEN_OR,               new(null,       null,   Precedence.PREC_NONE) },
+            { TokenType.TOKEN_OR,               new(null,       Or,     Precedence.PREC_OR) },
             { TokenType.TOKEN_PRINT,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_RETURN,           new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_SUPER,            new(null,       null,   Precedence.PREC_NONE) },
@@ -99,6 +102,7 @@ public class Compiler
             { TokenType.TOKEN_TRUE,             new(Literal,    null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_VAR,              new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_WHILE,            new(null,       null,   Precedence.PREC_NONE) },
+            { TokenType.TOKEN_BREAK,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_ERROR,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_EOF,              new(null,       null,   Precedence.PREC_NONE) },
         };
@@ -201,6 +205,18 @@ public class Compiler
         EmitByte(b2);
     }
 
+    private void EmitLoop(int loopStart)
+    {
+        EmitByte((byte)OpCode.OP_LOOP);
+
+        int offset = _currentChunk.Code.Count - loopStart + 2;
+        if (offset > ushort.MaxValue)
+            Error("Loop body too large.");
+
+        EmitByte((byte)((offset >> 8) & 0xff));
+        EmitByte((byte)(offset & 0xff));
+    }
+
     private int EmitJump(byte instuction)
     {
         EmitByte(instuction);
@@ -236,20 +252,10 @@ public class Compiler
 
         _currentChunk.Code[offset] = (byte)((jump >> 8) & 0xff);
         _currentChunk.Code[offset + 1] = (byte)(jump & 0xff);
-    }
 
-    //private void EmitGlobalVarOp(OpCode normal, OpCode extended, int value)
-    //{
-    //    if (value <= byte.MaxValue)
-    //    {
-    //        EmitBytes((byte)normal, (byte)value);
-    //    }
-    //    else
-    //    {
-    //        EmitByte((byte)extended);
-    //        EmitBytes(BitConverter.GetBytes(value));
-    //    }
-    //}
+        ushort test = BitConverter.ToUInt16([_currentChunk.Code[offset + 1], _currentChunk.Code[offset]]);
+        Console.WriteLine($"test={test}");
+    }
 
     private void EndCompiler()
     {
@@ -289,6 +295,18 @@ public class Compiler
         EmitConstant(Value.NumberVal(value));
     }
 
+    private void Or(bool canAssign)
+    {
+        int elseJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+        int endJump = EmitJump((byte)OpCode.OP_JUMP);
+
+        PatchJump(elseJump);
+        EmitByte((byte)OpCode.OP_POP);
+
+        ParsePrecedence(Precedence.PREC_OR);
+        PatchJump(endJump);
+    }
+
     private void String(bool canAssign)
     {
         EmitConstant(Value.StringVal(_parser.Previous.Lexeme));
@@ -312,14 +330,14 @@ public class Compiler
             setOP = (byte)OpCode.OP_SET_GLOBAL;
         }
 
-        if (canAssign && arg >= 0 && Match(TokenType.TOKEN_EQUAL))
+        if (canAssign && Match(TokenType.TOKEN_EQUAL))
         {
             Expression();
 
             EmitByte(setOP);
             EmitBytes(BitConverter.GetBytes(arg));
         }
-        else if (arg >= 0)
+        else
         {
             EmitByte(getOp);
             EmitBytes(BitConverter.GetBytes(arg));
@@ -512,21 +530,16 @@ public class Compiler
 
         EmitByte((byte)OpCode.OP_DEFINE_GLOBAL);
         EmitBytes(BitConverter.GetBytes(global));
-
-        //if (global <= byte.MaxValue)
-        //{
-        //    EmitBytes((byte)OpCode.OP_DEFINE_GLOBAL, (byte)global);
-        //} 
-        //else
-        //{
-        //    EmitByte((byte)OpCode.OP_DEFINE_GLOBAL_LONG);
-        //    EmitBytes(BitConverter.GetBytes(global));
-        //}
     }
 
     private void And(bool canAsign)
     {
-        //ToDo: implement
+        int endJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+
+        EmitByte((byte)OpCode.OP_POP);
+        ParsePrecedence(Precedence.PREC_AND);
+
+        PatchJump(endJump);
     }
 
     private void Expression()
@@ -562,7 +575,63 @@ public class Compiler
     {
         Expression();
         Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after expression.");
-        EmitByte((byte)OpCode.OP_POP);
+        //EmitByte((byte)OpCode.OP_POP);
+    }
+
+    private void ForStatement()
+    {
+        BeginScope();
+        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
+        
+        if (Match(TokenType.TOKEN_SEMICOLON))
+        {
+
+        }
+        else if (Match(TokenType.TOKEN_VAR))
+        {
+            VarDeclaration();
+        }
+        else
+        {
+            ExpressionStatement();
+        }
+
+        int loopStart = _currentChunk.Code.Count;
+
+        int exitJump = -1;
+        if (!Match(TokenType.TOKEN_SEMICOLON))
+        {
+            Expression();
+            Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after loop condition.");
+
+            exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+            EmitByte((byte)OpCode.OP_POP);
+        }
+
+        if (!Match(TokenType.TOKEN_RIGHT_PAREN))
+        {
+            int bodyJump = EmitJump((byte)OpCode.OP_JUMP);
+            int incrementStart = _currentChunk.Code.Count;
+            Expression();
+            EmitByte((byte)OpCode.OP_POP);
+            Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
+
+            EmitLoop(loopStart);
+            loopStart = incrementStart;
+            PatchJump(bodyJump);
+        }
+
+        Statement();
+        EmitLoop(loopStart);
+
+        if (exitJump != -1)
+        {
+            PatchJump(exitJump);
+            _breakJumps.Push(exitJump);
+            EmitByte((byte)OpCode.OP_POP);
+        }
+
+        EndScope();
     }
 
     private void IfStatement()
@@ -591,6 +660,38 @@ public class Compiler
         Expression();
         Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after value.");
         EmitByte((byte)OpCode.OP_PRINT);
+    }
+
+    private void WhileStatement()
+    {
+        int loopStart = _currentChunk.Code.Count;
+        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
+        Expression();
+        Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+
+        int exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+        EmitByte((byte)OpCode.OP_POP);
+        Statement();
+        EmitLoop(loopStart);
+
+        PatchJump(exitJump);
+        _breakJumps.Push(exitJump);
+        EmitByte((byte)OpCode.OP_POP);
+    }
+
+    private void BreakStatement()
+    {
+        if (_breakJumps.Count == 0)
+        {
+            Error("Break statement has to be in a loop.");
+            return;
+        }
+
+        EmitJump((byte)OpCode.OP_JUMP);
+        //EmitByte((byte)OpCode.OP_POP);
+
+        int jumpTo = _breakJumps.Pop();
+        PatchJump(jumpTo);
     }
 
     private void Synchronize()
@@ -634,10 +735,18 @@ public class Compiler
 
     private void Statement()
     {
+        Console.WriteLine($"{_parser.Current.Type}");
+
         if (Match(TokenType.TOKEN_PRINT))
             PrintStatement();
-        if (Match(TokenType.TOKEN_IF))
+        else if (Match(TokenType.TOKEN_FOR))
+            ForStatement();
+        else if (Match(TokenType.TOKEN_IF))
             IfStatement();
+        else if (Match(TokenType.TOKEN_WHILE))
+            WhileStatement();
+        else if (Match(TokenType.TOKEN_BREAK))
+            BreakStatement();
         else if (Match(TokenType.TOKEN_LEFT_BRACE))
         {
             BeginScope();
