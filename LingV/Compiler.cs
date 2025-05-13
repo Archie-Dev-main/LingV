@@ -1,12 +1,6 @@
 ﻿#define DEBUG_PRINT_CODE
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Linq;
-using System.Linq.Expressions;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace LingV;
 
@@ -43,8 +37,115 @@ public struct ParseRule(Action<bool> prefix, Action<bool> infix, Precedence prec
 public struct Local(Token name, int depth)
 {
     public Token Name = name;
-    public Token Value;
     public int Depth = depth;
+}
+
+public class ExpressionQueue
+{
+    public int ExpressionDepth
+    {
+        get
+        {
+            return _expressionOrder.Count;
+        }
+    }
+
+    private readonly Stack<Queue<int>> _expressionOrder = [];
+    private Queue<int> _currentOrder
+    {
+        get
+        {
+            return _expressionOrder.Peek();
+        }
+    }
+
+    public void PushExpression()
+    {
+        _expressionOrder.Push([]);
+    }
+
+    public void PopExpression()
+    {
+        Queue<int> temp = _expressionOrder.Pop();
+
+        if (_expressionOrder.Count == 0)
+            return;
+
+        _currentOrder.Enqueue(temp.Dequeue());
+    }
+
+    public void AddValue(int value)
+    {
+        //Console.WriteLine($"Value Added: {value}");
+        _currentOrder.Enqueue(value);
+    }
+
+    public int GetValue()
+    {
+        int value = _currentOrder.Dequeue();
+
+        //Console.WriteLine($"Value Removed: {value}");
+
+        return value;
+    }
+}
+
+public class RegisterSelector
+{
+    public Action<int> EvictRegister;
+
+    private readonly int _gpRegNum;
+    private readonly List<int> _usedRegisters = [];
+    private readonly List<int> _unusedRegisters = [];
+
+    public RegisterSelector(int gpRegNum)
+    {
+        _gpRegNum = gpRegNum;
+
+        for (int i = 0; i < gpRegNum; ++i)
+        {
+            _unusedRegisters.Add(i);
+        }
+    }
+
+    public int GetUnusedRegister()
+    {
+        int reg;
+
+        if (_unusedRegisters.Count == 0)
+        {
+            EvictRegister(_usedRegisters[0]);
+            _unusedRegisters.Add(_usedRegisters[0]);
+            _usedRegisters.RemoveAt(0);
+        }
+        
+        reg = _unusedRegisters[0];
+        _unusedRegisters.RemoveAt(0);
+        SetRecentlyUsedRegister(reg);
+
+        return reg;
+    }
+
+    public int GetMostRecentlyUsedRegister()
+    {
+        SetRecentlyUsedRegister(_usedRegisters[^1]);
+        return _usedRegisters[^1];
+    }
+
+    private void SetRecentlyUsedRegister(int reg)
+    {
+        int idx;
+
+        if (_usedRegisters.Contains(reg))
+        {
+            idx = _usedRegisters.Find(i => i == reg);
+            _usedRegisters.RemoveAt(idx);
+            _usedRegisters.Add(idx);
+            return;
+        }
+
+        _usedRegisters.Add(reg);
+    }
 }
 
 public class Compiler
@@ -55,13 +156,23 @@ public class Compiler
 
     private readonly Stack<int> _breakJumps = [];
 
-    private readonly List<Local> _locals = [];
-    private int _scopeDepth = 0;
+    private readonly Queue<int> _expressionOrder = new();
+    private int _expressionCount = 0;
+
+    private int _register = -1;
+
+    private readonly ExpressionQueue _expressionQueue = new();
+    private readonly RegisterSelector _regSelector;
+
+    //private readonly List<Local> _locals = [];
+    //private int _scopeDepth = 0;
 
     private readonly Dictionary<TokenType, ParseRule> _rules;
 
-    public Compiler()
+    public Compiler(int gpRegNum)
     {
+         _regSelector = new(gpRegNum);
+
         _rules = new ()
         {
             { TokenType.TOKEN_LEFT_PAREN,       new(Grouping,   null,   Precedence.PREC_NONE)  },
@@ -83,10 +194,10 @@ public class Compiler
             { TokenType.TOKEN_GREATER_EQUAL,    new(null,       Binary, Precedence.PREC_COMPARISON) },
             { TokenType.TOKEN_LESS,             new(null,       Binary, Precedence.PREC_COMPARISON) },
             { TokenType.TOKEN_LESS_EQUAL,       new(null,       Binary, Precedence.PREC_COMPARISON) },
-            { TokenType.TOKEN_IDENTIFIER,       new(Variable,   null,   Precedence.PREC_NONE) },
+            { TokenType.TOKEN_IDENTIFIER,       new(null,   null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_STRING,           new(String,     null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_NUMBER,           new(Number,     null,   Precedence.PREC_NONE) },
-            { TokenType.TOKEN_AND,              new(null,       And,    Precedence.PREC_AND) },
+            { TokenType.TOKEN_AND,              new(null,       null,    Precedence.PREC_NONE) },
             { TokenType.TOKEN_CLASS,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_ELSE,             new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_FALSE,            new(Literal,    null,   Precedence.PREC_NONE) },
@@ -94,7 +205,7 @@ public class Compiler
             { TokenType.TOKEN_FUN,              new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_IF,               new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_NIL,              new(Literal,    null,   Precedence.PREC_NONE) },
-            { TokenType.TOKEN_OR,               new(null,       Or,     Precedence.PREC_OR) },
+            { TokenType.TOKEN_OR,               new(null,       null,     Precedence.PREC_NONE) },
             { TokenType.TOKEN_PRINT,            new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_RETURN,           new(null,       null,   Precedence.PREC_NONE) },
             { TokenType.TOKEN_SUPER,            new(null,       null,   Precedence.PREC_NONE) },
@@ -137,11 +248,11 @@ public class Compiler
         //return false;
 
         Advance();
-        //Expression();
-        //Consume(TokenType.TOKEN_EOF, "Expect end of expression.");
+        Expression();
+        Consume(TokenType.TOKEN_EOF, "Expect end of expression.");
 
-        while (!Match(TokenType.TOKEN_EOF))
-            Declaration();
+        //while (!Match(TokenType.TOKEN_EOF))
+        //    Declaration();
 
         EndCompiler();
 
@@ -205,17 +316,36 @@ public class Compiler
         EmitByte(b2);
     }
 
-    private void EmitLoop(int loopStart)
+    private void EmitBytes(byte[] bytes)
     {
-        EmitByte((byte)OpCode.OP_LOOP);
-
-        int offset = _currentChunk.Code.Count - loopStart + 2;
-        if (offset > ushort.MaxValue)
-            Error("Loop body too large.");
-
-        EmitByte((byte)((offset >> 8) & 0xff));
-        EmitByte((byte)(offset & 0xff));
+        _currentChunk.Write(bytes, _parser.Previous.Line);
     }
+
+    private void EmitBinaryInstruction(byte instruction)
+    {
+        EmitByte(instruction);
+        EmitRegister(_expressionQueue.GetValue());
+        EmitRegister(_expressionQueue.GetValue());
+        _expressionQueue.AddValue(_register);
+    }
+
+    private void EmitUnaryInstruction(byte instruction)
+    {
+        EmitByte(instruction);
+        EmitRegister(_register);
+    }
+
+    //private void EmitLoop(int loopStart)
+    //{
+    //    EmitByte((byte)OpCode.OP_LOOP);
+
+    //    int offset = _currentChunk.Code.Count - loopStart + 2;
+    //    if (offset > ushort.MaxValue)
+    //        Error("Loop body too large.");
+
+    //    EmitByte((byte)((offset >> 8) & 0xff));
+    //    EmitByte((byte)(offset & 0xff));
+    //}
 
     private int EmitJump(byte instuction)
     {
@@ -226,11 +356,6 @@ public class Compiler
         return _currentChunk.Code.Count - 2;
     }
 
-    private void EmitBytes(byte[] bytes)
-    {
-        _currentChunk.Write(bytes, _parser.Previous.Line);
-    }
-
     private void EmitReturn()
     {
         EmitByte((byte)OpCode.OP_RETURN);
@@ -238,28 +363,52 @@ public class Compiler
 
     private void EmitConstant(Value value)
     {
-        _currentChunk.WriteConstant(value, _parser.Previous.Line);
-    }
-
-    private void PatchJump(int offset)
-    {
-        int jump = _currentChunk.Code.Count - 2 - offset;
-
-        if (jump > ushort.MaxValue)
+        if (_expressionCount == 0)
         {
-            Error("Too much code to jump over.");
+            _expressionQueue.AddValue(_register);
+            _expressionQueue.AddValue(_currentChunk.WriteConstant(value, _parser.Previous.Line));
+            EmitBinaryInstruction((byte)OpCode.OP_MOV);
+            //_expressionQueue.AddValue(_register);
         }
+        else
+            _expressionQueue.AddValue(_currentChunk.WriteConstant(value, _parser.Previous.Line));
 
-        _currentChunk.Code[offset] = (byte)((jump >> 8) & 0xff);
-        _currentChunk.Code[offset + 1] = (byte)(jump & 0xff);
-
-        ushort test = BitConverter.ToUInt16([_currentChunk.Code[offset + 1], _currentChunk.Code[offset]]);
-        Console.WriteLine($"test={test}");
+        //_expressionOrder.Enqueue(_currentChunk.WriteConstant(value, _parser.Previous.Line));
+        _expressionCount++;
     }
+
+    private void EmitRegister(int reg)
+    {
+        //EmitByte((byte)OpCode.OP_REGISTER);
+        EmitBytes(BitConverter.GetBytes(reg));
+    }
+
+    //private void PatchJump(int offset)
+    //{
+    //    int jump = _currentChunk.Code.Count - 2 - offset;
+
+    //    if (jump > ushort.MaxValue)
+    //    {
+    //        Error("Too much code to jump over.");
+    //    }
+
+    //    _currentChunk.Code[offset] = (byte)((jump >> 8) & 0xff);
+    //    _currentChunk.Code[offset + 1] = (byte)(jump & 0xff);
+
+    //    ushort test = BitConverter.ToUInt16([_currentChunk.Code[offset + 1], _currentChunk.Code[offset]]);
+    //    Console.WriteLine($"test={test}");
+    //}
 
     private void EndCompiler()
     {
         EmitReturn();
+
+        //while (_expressionOrder.Count > 0)
+        //{
+        //    int index = _expressionOrder.Dequeue();
+        //    Console.WriteLine($"index: {index}");
+        //    Console.WriteLine($"constant: {_currentChunk.ReadConstant(index)}");
+        //}
 
 #if DEBUG_PRINT_CODE
         if (!_parser.HadError)
@@ -267,21 +416,21 @@ public class Compiler
 #endif
     }
 
-    private void BeginScope()
-    {
-        _scopeDepth++;
-    }
+    //private void BeginScope()
+    //{
+    //    _scopeDepth++;
+    //}
 
-    private void EndScope()
-    {
-        _scopeDepth--;
+    //private void EndScope()
+    //{
+    //    _scopeDepth--;
 
-        while (_locals.Count > 0 && _locals[^1].Depth > _scopeDepth)
-        {
-            EmitByte((byte)OpCode.OP_POP);
-            _locals.RemoveAt(_locals.Count - 1);
-        }
-    }
+    //    while (_locals.Count > 0 && _locals[^1].Depth > _scopeDepth)
+    //    {
+    //        EmitByte((byte)OpCode.OP_POP);
+    //        _locals.RemoveAt(_locals.Count - 1);
+    //    }
+    //}
 
     private void Grouping(bool canAssign)
     {
@@ -295,59 +444,22 @@ public class Compiler
         EmitConstant(Value.NumberVal(value));
     }
 
-    private void Or(bool canAssign)
-    {
-        int elseJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
-        int endJump = EmitJump((byte)OpCode.OP_JUMP);
-
-        PatchJump(elseJump);
-        EmitByte((byte)OpCode.OP_POP);
-
-        ParsePrecedence(Precedence.PREC_OR);
-        PatchJump(endJump);
-    }
-
     private void String(bool canAssign)
     {
         EmitConstant(Value.StringVal(_parser.Previous.Lexeme));
     }
 
-    private void NamedVariable(Token name, bool canAssign)
-    {
-        //int arg = FindIdentifierConstant(name);
-        byte getOp, setOP;
-        int arg = ResolveLocal(name);
+    //private void Or(bool canAssign)
+    //{
+    //    int elseJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+    //    int endJump = EmitJump((byte)OpCode.OP_JUMP);
 
-        if (arg != 1)
-        {
-            getOp = (byte)OpCode.OP_GET_LOCAL;
-            setOP = (byte)OpCode.OP_SET_LOCAL;
-        }
-        else
-        {
-            arg = FindIdentifierConstant(name);
-            getOp = (byte)OpCode.OP_GET_GLOBAL;
-            setOP = (byte)OpCode.OP_SET_GLOBAL;
-        }
+    //    PatchJump(elseJump);
+    //    EmitByte((byte)OpCode.OP_POP);
 
-        if (canAssign && Match(TokenType.TOKEN_EQUAL))
-        {
-            Expression();
-
-            EmitByte(setOP);
-            EmitBytes(BitConverter.GetBytes(arg));
-        }
-        else
-        {
-            EmitByte(getOp);
-            EmitBytes(BitConverter.GetBytes(arg));
-        }
-    }
-
-    private void Variable(bool canAssign)
-    {
-        NamedVariable(_parser.Previous, canAssign);
-    }
+    //    ParsePrecedence(Precedence.PREC_OR);
+    //    PatchJump(endJump);
+    //}
 
     private void Binary(bool canAssign)
     {
@@ -359,34 +471,37 @@ public class Compiler
         switch (opType)
         {
             case TokenType.TOKEN_BANG_EQUAL:
-                EmitBytes((byte)OpCode.OP_EQUAL, (byte)OpCode.OP_NOT);
+                EmitBinaryInstruction((byte)OpCode.OP_EQUAL);
+                EmitUnaryInstruction((byte)OpCode.OP_NOT);
                 break;
             case TokenType.TOKEN_EQUAL_EQUAL:
-                EmitByte((byte)OpCode.OP_EQUAL);
+                EmitBinaryInstruction((byte)OpCode.OP_EQUAL);
                 break;
             case TokenType.TOKEN_GREATER:
-                EmitByte((byte)OpCode.OP_GREATER);
+                EmitBinaryInstruction((byte)OpCode.OP_GREATER);
                 break;
             case TokenType.TOKEN_GREATER_EQUAL:
-                EmitBytes((byte)OpCode.OP_LESS, (byte)OpCode.OP_NOT);
+                EmitBinaryInstruction((byte)OpCode.OP_LESS);
+                EmitUnaryInstruction((byte)OpCode.OP_NOT);
                 break;
             case TokenType.TOKEN_LESS:
-                EmitByte((byte)OpCode.OP_LESS);
+                EmitBinaryInstruction((byte)OpCode.OP_LESS);
                 break;
             case TokenType.TOKEN_LESS_EQUAL:
-                EmitBytes((byte)OpCode.OP_GREATER, (byte)OpCode.OP_NOT);
+                EmitBinaryInstruction((byte)OpCode.OP_GREATER);
+                EmitUnaryInstruction((byte)OpCode.OP_NOT);
                 break;
             case TokenType.TOKEN_PLUS:
-                EmitByte((byte)OpCode.OP_ADD);
+                EmitBinaryInstruction((byte)OpCode.OP_ADD);
                 break;
             case TokenType.TOKEN_MINUS:
-                EmitByte((byte)OpCode.OP_SUBTRACT);
+                EmitBinaryInstruction((byte)OpCode.OP_SUBTRACT);
                 break;
             case TokenType.TOKEN_STAR:
-                EmitByte((byte)OpCode.OP_MULTIPLY);
+                EmitBinaryInstruction((byte)OpCode.OP_MULTIPLY);
                 break;
             case TokenType.TOKEN_SLASH:
-                EmitByte((byte)OpCode.OP_DIVIDE);
+                EmitBinaryInstruction((byte)OpCode.OP_DIVIDE);
                 break;
             default:
                 return;
@@ -412,7 +527,7 @@ public class Compiler
 
         switch (opType)
         {
-            case TokenType.TOKEN_MINUS: EmitByte((byte)OpCode.OP_NEGATE); break;
+            case TokenType.TOKEN_MINUS: EmitUnaryInstruction((byte)OpCode.OP_NEGATE); break;
             default:
                 return;
         }
@@ -446,130 +561,36 @@ public class Compiler
         }
     }
 
-    private int IdentifierConstant(Token name)
-    {
-        return _currentChunk.AddConstant(Value.StringVal(name.Lexeme));
-    }
+    //private void And(bool canAsign)
+    //{
+    //    int endJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
 
-    private int ResolveLocal(Token name)
-    {
-        for (int i = _locals.Count - 1; i >= 0; --i)
-        {
-            Local local = _locals[i];
+    //    EmitByte((byte)OpCode.OP_POP);
+    //    ParsePrecedence(Precedence.PREC_AND);
 
-            if (name.Lexeme == local.Name.Lexeme)
-            {
-                if (local.Depth == -1)
-                    Error("Can't read local variable in its own initializer.");
-
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
-    private void DeclareVariable()
-    {
-        if (_scopeDepth == 0)
-            return;
-
-        Token name = _parser.Previous;
-
-        for (int i = _locals.Count - 1; i >= 0; --i)
-        {
-            Local local = _locals[i];
-
-            if (local.Depth != -1 && local.Depth < _scopeDepth)
-                break;
-
-            if (name.Lexeme == local.Name.Lexeme)
-                Error("Already a variable with this name in this scope.");
-        }
-
-        _locals.Add(new(name, -1));
-    }
-
-    private int FindIdentifierConstant(Token name)
-    {
-        List<Value> constants = _currentChunk.Constants.Values;
-
-        for (int i = 0; i < constants.Count; ++i)
-        {
-            Value v = constants[i];
-            if (v.IsString() && v.AsString() == name.Lexeme)
-                return i;
-        }
-
-        return -1;
-    }
-
-    private int ParseVariable(string errorMessage)
-    {
-        Consume(TokenType.TOKEN_IDENTIFIER, errorMessage);
-
-        DeclareVariable();
-        if (_scopeDepth > 0)
-            return 0;
-
-        return IdentifierConstant(_parser.Previous);
-    }
-
-    private void MarkInitialized()
-    {
-        _locals[^1] = new(_locals[^1].Name, _scopeDepth);
-    }
-
-    private void DefineVariable(int global)
-    {
-        if (_scopeDepth > 0)
-        {
-            MarkInitialized();
-            return;
-        }
-
-        EmitByte((byte)OpCode.OP_DEFINE_GLOBAL);
-        EmitBytes(BitConverter.GetBytes(global));
-    }
-
-    private void And(bool canAsign)
-    {
-        int endJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
-
-        EmitByte((byte)OpCode.OP_POP);
-        ParsePrecedence(Precedence.PREC_AND);
-
-        PatchJump(endJump);
-    }
+    //    PatchJump(endJump);
+    //}
 
     private void Expression()
     {
+        _expressionQueue.PushExpression();
+        _register++;
+        _expressionCount = 0;
         ParsePrecedence(Precedence.PREC_ASSIGNMENT);
+        _expressionQueue.PopExpression();
+        //_expressionQueue.AddValue(_register);
+        _register--;
     }
 
-    private void Block()
-    {
-        while (!Check(TokenType.TOKEN_RIGHT_BRACE) && !Check(TokenType.TOKEN_EOF))
-        {
-            Declaration();
-        }
+    //private void Block()
+    //{
+    //    while (!Check(TokenType.TOKEN_RIGHT_BRACE) && !Check(TokenType.TOKEN_EOF))
+    //    {
+    //        Declaration();
+    //    }
 
-        Consume(TokenType.TOKEN_RIGHT_BRACE, "Expect '}' after block.");
-    }
-
-    private void VarDeclaration()
-    {
-        int global = ParseVariable("Expect variable name.");
-
-        if (Match(TokenType.TOKEN_EQUAL))
-            Expression();
-        else
-            EmitByte((byte)OpCode.OP_NIL);
-
-        Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
-
-        DefineVariable(global);
-    }
+    //    Consume(TokenType.TOKEN_RIGHT_BRACE, "Expect '}' after block.");
+    //}
 
     private void ExpressionStatement()
     {
@@ -578,82 +599,82 @@ public class Compiler
         //EmitByte((byte)OpCode.OP_POP);
     }
 
-    private void ForStatement()
-    {
-        BeginScope();
-        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
+    //private void ForStatement()
+    //{
+    //    BeginScope();
+    //    Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
         
-        if (Match(TokenType.TOKEN_SEMICOLON))
-        {
+    //    if (Match(TokenType.TOKEN_SEMICOLON))
+    //    {
 
-        }
-        else if (Match(TokenType.TOKEN_VAR))
-        {
-            VarDeclaration();
-        }
-        else
-        {
-            ExpressionStatement();
-        }
+    //    }
+    //    else if (Match(TokenType.TOKEN_VAR))
+    //    {
+    //        VarDeclaration();
+    //    }
+    //    else
+    //    {
+    //        ExpressionStatement();
+    //    }
 
-        int loopStart = _currentChunk.Code.Count;
+    //    int loopStart = _currentChunk.Code.Count;
 
-        int exitJump = -1;
-        if (!Match(TokenType.TOKEN_SEMICOLON))
-        {
-            Expression();
-            Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after loop condition.");
+    //    int exitJump = -1;
+    //    if (!Match(TokenType.TOKEN_SEMICOLON))
+    //    {
+    //        Expression();
+    //        Consume(TokenType.TOKEN_SEMICOLON, "Expect ';' after loop condition.");
 
-            exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
-            EmitByte((byte)OpCode.OP_POP);
-        }
+    //        exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+    //        EmitByte((byte)OpCode.OP_POP);
+    //    }
 
-        if (!Match(TokenType.TOKEN_RIGHT_PAREN))
-        {
-            int bodyJump = EmitJump((byte)OpCode.OP_JUMP);
-            int incrementStart = _currentChunk.Code.Count;
-            Expression();
-            EmitByte((byte)OpCode.OP_POP);
-            Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
+    //    if (!Match(TokenType.TOKEN_RIGHT_PAREN))
+    //    {
+    //        int bodyJump = EmitJump((byte)OpCode.OP_JUMP);
+    //        int incrementStart = _currentChunk.Code.Count;
+    //        Expression();
+    //        EmitByte((byte)OpCode.OP_POP);
+    //        Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
 
-            EmitLoop(loopStart);
-            loopStart = incrementStart;
-            PatchJump(bodyJump);
-        }
+    //        EmitLoop(loopStart);
+    //        loopStart = incrementStart;
+    //        PatchJump(bodyJump);
+    //    }
 
-        Statement();
-        EmitLoop(loopStart);
+    //    Statement();
+    //    EmitLoop(loopStart);
 
-        if (exitJump != -1)
-        {
-            PatchJump(exitJump);
-            _breakJumps.Push(exitJump);
-            EmitByte((byte)OpCode.OP_POP);
-        }
+    //    if (exitJump != -1)
+    //    {
+    //        PatchJump(exitJump);
+    //        _breakJumps.Push(exitJump);
+    //        EmitByte((byte)OpCode.OP_POP);
+    //    }
 
-        EndScope();
-    }
+    //    EndScope();
+    //}
 
-    private void IfStatement()
-    {
-        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
-        Expression();
-        Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+    //private void IfStatement()
+    //{
+    //    Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+    //    Expression();
+    //    Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
 
-        int thenJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
-        EmitByte((byte)OpCode.OP_POP);
-        Statement();
+    //    int thenJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+    //    EmitByte((byte)OpCode.OP_POP);
+    //    Statement();
 
-        int elseJump = EmitJump((byte)OpCode.OP_JUMP);
+    //    int elseJump = EmitJump((byte)OpCode.OP_JUMP);
 
-        PatchJump(thenJump);
-        EmitByte((byte)OpCode.OP_POP);
+    //    PatchJump(thenJump);
+    //    EmitByte((byte)OpCode.OP_POP);
 
-        if (Match(TokenType.TOKEN_ELSE))
-            Statement();
+    //    if (Match(TokenType.TOKEN_ELSE))
+    //        Statement();
 
-        PatchJump(elseJump);
-    }
+    //    PatchJump(elseJump);
+    //}
 
     private void PrintStatement()
     {
@@ -662,37 +683,37 @@ public class Compiler
         EmitByte((byte)OpCode.OP_PRINT);
     }
 
-    private void WhileStatement()
-    {
-        int loopStart = _currentChunk.Code.Count;
-        Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
-        Expression();
-        Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+    //private void WhileStatement()
+    //{
+    //    int loopStart = _currentChunk.Code.Count;
+    //    Consume(TokenType.TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
+    //    Expression();
+    //    Consume(TokenType.TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
 
-        int exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
-        EmitByte((byte)OpCode.OP_POP);
-        Statement();
-        EmitLoop(loopStart);
+    //    int exitJump = EmitJump((byte)OpCode.OP_JUMP_IF_FALSE);
+    //    EmitByte((byte)OpCode.OP_POP);
+    //    Statement();
+    //    EmitLoop(loopStart);
 
-        PatchJump(exitJump);
-        _breakJumps.Push(exitJump);
-        EmitByte((byte)OpCode.OP_POP);
-    }
+    //    PatchJump(exitJump);
+    //    _breakJumps.Push(exitJump);
+    //    EmitByte((byte)OpCode.OP_POP);
+    //}
 
-    private void BreakStatement()
-    {
-        if (_breakJumps.Count == 0)
-        {
-            Error("Break statement has to be in a loop.");
-            return;
-        }
+    //private void BreakStatement()
+    //{
+    //    if (_breakJumps.Count == 0)
+    //    {
+    //        Error("Break statement has to be in a loop.");
+    //        return;
+    //    }
 
-        EmitJump((byte)OpCode.OP_JUMP);
-        //EmitByte((byte)OpCode.OP_POP);
+    //    EmitJump((byte)OpCode.OP_JUMP);
+    //    //EmitByte((byte)OpCode.OP_POP);
 
-        int jumpTo = _breakJumps.Pop();
-        PatchJump(jumpTo);
-    }
+    //    int jumpTo = _breakJumps.Pop();
+    //    PatchJump(jumpTo);
+    //}
 
     private void Synchronize()
     {
@@ -722,16 +743,16 @@ public class Compiler
         }
     }
 
-    private void Declaration()
-    {
-        if (Match(TokenType.TOKEN_VAR))
-            VarDeclaration();
-        else
-            Statement();
+    //private void Declaration()
+    //{
+    //    if (Match(TokenType.TOKEN_VAR))
+    //        VarDeclaration();
+    //    else
+    //        Statement();
 
-        if (_parser.PanicMode)
-            Synchronize();
-    }
+    //    if (_parser.PanicMode)
+    //        Synchronize();
+    //}
 
     private void Statement()
     {
@@ -739,22 +760,28 @@ public class Compiler
 
         if (Match(TokenType.TOKEN_PRINT))
             PrintStatement();
-        else if (Match(TokenType.TOKEN_FOR))
-            ForStatement();
-        else if (Match(TokenType.TOKEN_IF))
-            IfStatement();
-        else if (Match(TokenType.TOKEN_WHILE))
-            WhileStatement();
-        else if (Match(TokenType.TOKEN_BREAK))
-            BreakStatement();
+        //else if (Match(TokenType.TOKEN_FOR))
+        //    ForStatement();
+        //else if (Match(TokenType.TOKEN_IF))
+        //    IfStatement();
+        //else if (Match(TokenType.TOKEN_WHILE))
+        //    WhileStatement();
+        //else if (Match(TokenType.TOKEN_BREAK))
+        //    BreakStatement();
         else if (Match(TokenType.TOKEN_LEFT_BRACE))
         {
-            BeginScope();
-            Block();
-            EndScope();
+            //BeginScope();
+            //Block();
+            //EndScope();
         }
         else
             ExpressionStatement();
+    }
+
+    private void EvictRegister(int reg)
+    {
+        EmitByte((byte)OpCode.OP_PUSH);
+        EmitRegister(reg);
     }
 
     private void ErrorAtCurrent(string message)

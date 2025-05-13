@@ -110,6 +110,19 @@ public struct Value
         return type == ValueType.VAL_OBJ;
     }
 
+    public readonly bool IsTruthy()
+    {
+        return type switch
+        {
+            ValueType.VAL_BOOL => AsBool(),
+            ValueType.VAL_NIL => false,
+            ValueType.VAL_NUMBER => AsNumber() != 0,
+            ValueType.VAL_STRING => AsString() != null,
+            ValueType.VAL_OBJ => false,
+            _ => false,
+        };
+    }
+
     public readonly void PrintValue()
     {
         switch (type)
@@ -134,37 +147,34 @@ public struct Value
 
     public override readonly string ToString()
     {
-        switch (type)
+        return type switch
         {
-            case ValueType.VAL_BOOL:
-                return $"{AsBool():G}";
-            case ValueType.VAL_NIL:
-                return "nil";
-            case ValueType.VAL_NUMBER:
-                return $"{AsNumber():G}";
-            case ValueType.VAL_STRING:
-                return str;
+            ValueType.VAL_BOOL => $"{AsBool():G}",
+            ValueType.VAL_NIL => "nil",
+            ValueType.VAL_NUMBER => $"{AsNumber():G}",
+            ValueType.VAL_STRING => str,
             //case ValueType.VAL_OBJ:
             //    return obj.ToString();
-            default:
-                return "nil";
-        }
+            _ => "nil",
+        };
     }
 
     public static bool ValuesEqual(Value a, Value b)
     {
+        if (a.type == ValueType.VAL_BOOL || b.type == ValueType.VAL_BOOL)
+            return a.IsTruthy() == b.IsTruthy();
+
         if (a.type != b.type)
             return false;
 
-        switch(a.type)
+        return a.type switch
         {
-            case ValueType.VAL_BOOL: return a.AsBool() == b.AsBool();
-            case ValueType.VAL_NIL: return true;
-            case ValueType.VAL_NUMBER: return a.AsNumber() == b.AsNumber();
-            case ValueType.VAL_STRING: return a.AsString() == b.AsString();
+            ValueType.VAL_NIL => true,
+            ValueType.VAL_NUMBER => a.AsNumber() == b.AsNumber(),
+            ValueType.VAL_STRING => a.AsString() == b.AsString(),
             //case ValueType.VAL_OBJ: return a.AsObj() == b.AsObj();
-            default: return false;
-        }
+            _ => false,
+        };
     }
 }
 

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers.Binary;
+using System.Reflection.Metadata;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -8,11 +9,15 @@ namespace LingV;
 public enum OpCode : byte
 {
     OP_CONSTANT,
+    OP_REGISTER,
     //OP_CONSTANT_LONG,
     OP_NIL,
     OP_TRUE,
     OP_FALSE,
+    OP_PUSH,
     OP_POP,
+    OP_POP_STORE,
+    OP_MOV,
     OP_GET_LOCAL,
     OP_SET_LOCAL,
     OP_GET_GLOBAL,
@@ -54,31 +59,28 @@ public class Chunk
     public void Write(byte[] bytes, int line)
     {
         Code.AddRange(bytes);
+
         AddLine(line);
     }
 
     public int WriteConstant(Value value, int line)
     {
-        int constant = AddConstant(value);
-        byte[] bytes = BitConverter.GetBytes(constant);
+        int constant = -AddConstant(value) - 1;
+        //byte[] bytes = BitConverter.GetBytes(constant);
 
-        Write((byte)OpCode.OP_CONSTANT, line);
-        Write(bytes, line);
-
-        //if (Constants.Values.Count <= byte.MaxValue)
-        //{
-        //    Write((byte)OpCode.OP_CONSTANT, line);
-        //    Write(bytes[0], line);
-        //}
-        //else
-        //{
-        //    Write((byte)OpCode.OP_CONSTANT_LONG, line);
-        //    Write(bytes, line);
-        //}
+        //Write((byte)OpCode.OP_CONSTANT, line);
+        //Write(bytes, line);
 
         AddLine(line);
         
         return constant;
+    }
+
+    public Value ReadConstant(int constant)
+    {
+        constant = Math.Abs(constant) - 1;
+
+        return Constants.Values[constant];
     }
 
     public int AddConstant(Value value)
@@ -94,11 +96,11 @@ public class Chunk
 
         for (int i = 0; i < _numRefs.Count; ++i)
         {
-            if (count + _numRefs[i] > offset)
+            if (count == offset)
             {
                 return _lines[i];
             }
-            else if (count == offset)
+            else if(count + _numRefs[i] > offset)
             {
                 return _lines[i];
             }

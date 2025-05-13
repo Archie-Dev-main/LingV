@@ -11,17 +11,25 @@ public enum InterpretResult
     INTERPRET_RUNTIME_ERROR
 }
 
+public enum SpecialRegisters
+{
+    RAX = 0
+}
+
 public class VirtualMachine
 {
     private int PC = 0;
+    private Value AX = Value.NilVal();
     private Chunk _chunk;
+    private readonly List<Value> _registers = [];
     private readonly Stack<Value> _stack = [];
     private readonly Dictionary<string, Value> _globals = [];
+    private bool _hadRTE = false;
 
-    public InterpretResult Interpret(string source)
+    public InterpretResult Interpret(string source, int gpRegNum)
     {
         Chunk chunk = new();
-        Compiler compiler = new();
+        Compiler compiler = new(gpRegNum);
 
         if (!compiler.Compile(source, chunk))
             return InterpretResult.INTERPRET_COMPILE_ERROR;
@@ -29,6 +37,12 @@ public class VirtualMachine
         _chunk = chunk;
         PC = 0;
 
+        for (int i = 0; i < 1 + gpRegNum; ++i)
+        {
+            _registers.Add(Value.NilVal());
+        }
+
+        //return InterpretResult.INTERPRET_OK;
         return Run();
     }
 
@@ -47,16 +61,19 @@ public class VirtualMachine
             Debug.DisassembleInstruction(_chunk, PC);
 #endif
             byte instruction = ReadByte();
-            string name;
-            Value value;
-            int slot;
             ushort offset;
+            int reg, mem;
 
             switch (instruction)
             {
                 case (byte)OpCode.OP_CONSTANT:
                     Value constant = ReadConstant();
                     _stack.Push(constant);
+                    break;
+                case (byte)OpCode.OP_REGISTER:
+                    reg = ReadInt();
+
+                    Console.WriteLine($"Reg: {reg} has value Value: {_registers[reg]}");
                     break;
                 case (byte)OpCode.OP_NIL:
                     _stack.Push(Value.NilVal());
@@ -67,67 +84,25 @@ public class VirtualMachine
                 case (byte)OpCode.OP_FALSE:
                     _stack.Push(Value.BoolVal(false));
                     break;
+                case (byte)OpCode.OP_PUSH:
+                    reg = ReadInt();
+                    _stack.Push(_registers[reg]);
+                    break;
                 case (byte)OpCode.OP_POP:
                     _stack.Pop();
                     break;
-                case (byte)OpCode.OP_GET_LOCAL:
-                    slot = ReadInt();
-
-                    _stack.Push(_stack.Peek());
+                case (byte)OpCode.OP_POP_STORE:
+                    reg = ReadInt();
+                    _registers[reg] = _stack.Pop();
                     break;
-                case (byte)OpCode.OP_SET_LOCAL:
-                    slot = ReadInt();
+                case (byte)OpCode.OP_MOV:
+                    reg = ReadInt();
+                    mem = ReadInt();
 
-                    InsertInStack(slot, _stack.Peek());
-                    break;
-                case (byte)OpCode.OP_GET_GLOBAL:
-                //case (byte)OpCode.OP_GET_GLOBAL_LONG:
-                    name = ReadConstant().AsString();
-
-                    if (_globals.TryGetValue(name, out value))
-                    {
-                        _stack.Push(value);
-                    }
-                    else
-                    {
-                        RuntimeError($"Undefined variable '{name}'.");
-                        return InterpretResult.INTERPRET_RUNTIME_ERROR;
-                    }
-
-                    break;
-                case (byte)OpCode.OP_DEFINE_GLOBAL:
-                //case (byte)OpCode.OP_DEFINE_GLOBAL_LONG:
-                    name = ReadConstant().AsString();
-
-                    //if (_globals.TryGetValue(name, out value))
-                    //{
-                    //    RuntimeError($"Variable '{name}' cannot be defined twice.");
-                    //    return InterpretResult.INTERPRET_RUNTIME_ERROR;
-                    //}
-
-                    _globals[name] = Peek(0);
-                    _stack.Pop();
-                    break;
-                case (byte)OpCode.OP_SET_GLOBAL:
-                //case (byte)OpCode.OP_SET_GLOBAL_LONG:
-                    name = ReadConstant().AsString();
-
-                    if (_globals.TryGetValue(name, out value))
-                    {
-                        _globals[name] = Peek(0);
-                    }
-                    else
-                    {
-                        RuntimeError($"Undefined variable '{name}'.");
-                        return InterpretResult.INTERPRET_RUNTIME_ERROR;
-                    }
-
+                    _registers[reg] = mem >= 0 ? _registers[mem] : _chunk.ReadConstant(mem);
                     break;
                 case (byte)OpCode.OP_EQUAL:
-                    Value b = _stack.Pop();
-                    Value a = _stack.Pop();
-
-                    _stack.Push(Value.BoolVal(Value.ValuesEqual(a, b)));
+                    BinaryOp('=');
                     break;
                 case (byte)OpCode.OP_GREATER:
                     BinaryOp('>');
@@ -136,20 +111,7 @@ public class VirtualMachine
                     BinaryOp('<');
                     break;
                 case (byte)OpCode.OP_ADD:
-                    if (Peek(0).IsString() || Peek(1).IsString())
-                    {
-                        StringBinaryOp();
-                    }   
-                    else if (Peek(0).IsNumber() && Peek(1).IsNumber())
-                    {
-                        BinaryOp('+');
-                    }
-                    else
-                    {
-                        RuntimeError("Operands must be two numbers or two strings.");
-                        return InterpretResult.INTERPRET_RUNTIME_ERROR;
-                    }
-
+                    BinaryOp('+');
                     break;
                 case (byte)OpCode.OP_SUBTRACT:
                     BinaryOp('-');
@@ -161,19 +123,29 @@ public class VirtualMachine
                     BinaryOp('/');
                     break;
                 case (byte)OpCode.OP_NOT:
-                    _stack.Push(Value.BoolVal(IsFalsey(_stack.Pop())));
+                    reg = ReadInt();
+
+                    _registers[reg] = Value.BoolVal(IsFalsey(_registers[reg]));
                     break;
                 case (byte)OpCode.OP_NEGATE:
-                    if (!Peek(0).IsNumber())
+                    reg = ReadRegister();
+
+                    if (!_registers[reg].IsNumber())
                     {
                         RuntimeError("Operand must be a number.");
                         return InterpretResult.INTERPRET_RUNTIME_ERROR;
                     }
 
-                    _stack.Push(Value.NumberVal(-_stack.Pop().AsNumber()));
+                    _registers[reg] = Value.NumberVal(-_registers[reg].number);
                     break;
                 case (byte)OpCode.OP_PRINT:
-                    _stack.Pop().PrintValue();
+                    reg = ReadInt();
+
+                    if (reg >= 0)
+                        _registers[reg].PrintValue();
+                    else
+                        _chunk.ReadConstant(reg).PrintValue();
+                    
                     break;
                 case (byte)OpCode.OP_JUMP:
                     offset = ReadJumpShort();
@@ -191,8 +163,13 @@ public class VirtualMachine
                     PC -= offset;
                     break;
                 case (byte)OpCode.OP_RETURN:
+                    Console.WriteLine($"{_registers[0]}");
+                    Console.WriteLine($"{_registers[1]}");
                     return InterpretResult.INTERPRET_OK;
             }
+
+            if (_hadRTE)
+                return InterpretResult.INTERPRET_RUNTIME_ERROR;
         }
     }
 
@@ -256,6 +233,11 @@ public class VirtualMachine
         return BitConverter.ToInt32([ReadByte(), ReadByte(), ReadByte(), ReadByte()]);
     }
 
+    private int ReadRegister()
+    {
+        return ReadInt();
+    }
+
     private Value ReadConstant()
     {
         return _chunk.Constants.Values[ReadInt()];
@@ -267,36 +249,80 @@ public class VirtualMachine
 
     private void StringBinaryOp()
     {
-        string b = _stack.Pop().ToString();
-        string a = _stack.Pop().ToString();
+        int reg1 = ReadInt();
+        int reg2 = ReadInt();
+
+        string b = _registers[reg1].AsString();
+        string a = _registers[reg2].AsString();
 
         _stack.Push(Value.StringVal(a + b));
     }
 
     private void BinaryOp(char op)
     {
-        double b = _stack.Pop().AsNumber();
-        double a = _stack.Pop().AsNumber();
+        int reg = ReadInt();
+        int mem;
+
+        Value a, b;
+        double na, nb;
+
+        bool hasString;
+
+        if (reg < 0)
+        {
+            RuntimeError("Cannot store binary result in constant.");
+            _hadRTE = true;
+            return;
+        }
+
+        mem = ReadInt();
+
+        a = _registers[reg];
+        b = mem >= 0 ? _registers[mem] : _chunk.ReadConstant(mem);
+
+        if (op == '=')
+        {
+            _registers[reg] = Value.BoolVal(Value.ValuesEqual(a, b));
+            return;
+        }
+
+        if (!a.IsString() && !a.IsNumber() && !b.IsString() && !b.IsNumber())
+        {
+            RuntimeError("Operands must be a number or a string");
+            _hadRTE = true;
+            return;
+        }
+
+        hasString = a.IsString() || b.IsString();
+        if (hasString && op != '+')
+        {
+            RuntimeError("Strings can only be added together or compared by equality.");
+            _hadRTE = true;
+            return;
+        }
+
+        na = a.AsNumber();
+        nb = b.AsNumber();
 
         switch (op)
         {
             case '<':
-                _stack.Push(Value.BoolVal(a < b));
+                _registers[reg] = Value.BoolVal(na < nb);
                 break;
             case '>':
-                _stack.Push(Value.BoolVal(a > b));
+                _registers[reg] = Value.BoolVal(na > nb);
                 break;
             case '+':
-                _stack.Push(Value.NumberVal(a + b));
+                _registers[reg] = hasString ? Value.StringVal(a.ToString() + b.ToString()) : Value.NumberVal(na + nb);
                 break;
             case '-':
-                _stack.Push(Value.NumberVal(a - b));
+                _registers[reg] = Value.NumberVal(na - nb);
                 break;
             case '*':
-                _stack.Push(Value.NumberVal(a * b));
+                _registers[reg] = Value.NumberVal(na * nb);
                 break;
             case '/':
-                _stack.Push(Value.NumberVal(a / b));
+                _registers[reg] = Value.NumberVal(na / nb);
                 break;
         }
     }

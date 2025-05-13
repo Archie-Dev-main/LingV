@@ -51,7 +51,7 @@ static void REPL(VirtualMachine vm)
             break;
         }
 
-        vm.Interpret(line);
+        vm.Interpret(line, 32);
     }
 }
 
@@ -75,7 +75,7 @@ static void RunFile(VirtualMachine vm, string path)
 
     source += '\0';
 
-    InterpretResult result = vm.Interpret(source);
+    InterpretResult result = vm.Interpret(source, 32);
 
     if (result == InterpretResult.INTERPRET_COMPILE_ERROR)
         Environment.Exit(65);
